@@ -24,7 +24,7 @@
 	  <p>
 		© {new Date().getFullYear()} Grampian Flyers • Built by
 		<a
-		  href="https://boundary.co"
+		  href="https://boundarycreative.co.uk"
 		  class="font-semibold text-primary hover:underline"
 		  target="_blank"
 		  >Boundary</a
