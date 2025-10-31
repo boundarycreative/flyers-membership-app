@@ -1,0 +1,8 @@
+/* src/app.css */
+@import "tailwindcss";
+@plugin "daisyui";
+
+/* Optional: your overrides */
+html, body {
+  font-family: "Inter", sans-serif;
+}
