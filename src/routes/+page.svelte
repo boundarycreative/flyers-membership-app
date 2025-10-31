@@ -7,45 +7,21 @@
 	mapJustGo,
 	buildComparison,
 	toCSV,
-	type ComparisonRow
+	type ComparisonRow,
+	type SpondMember
   } from "$lib/xlsxUtils";
+
   import { onMount } from "svelte";
 
-  /* ---------------- PASSWORD GATE ---------------- */
-  let enteredPassword = "";
-  let isAuthenticated = false;
-  const APP_PASSWORD = "flyers2025"; // 🔒 Change this to your chosen password
+  let unlocked = false;
+  let passwordInput = "";
+  const PASSWORD = "flyers2025"; // 🔐 simple password
 
-  onMount(() => {
-	const savedAuth = localStorage.getItem("isAuthenticated");
-	if (savedAuth === "true") {
-	  isAuthenticated = true;
-	  loadDefaultData(); // ✅ ensure data loads immediately when already logged in
-	}
-  });
-
-  function checkPassword() {
-	if (enteredPassword === APP_PASSWORD) {
-	  isAuthenticated = true;
-	  localStorage.setItem("isAuthenticated", "true");
-	  loadDefaultData(); // ✅ load app data after successful login
-	} else {
-	  alert("Incorrect password");
-	}
-  }
-
-  function logout() {
-	localStorage.removeItem("isAuthenticated");
-	isAuthenticated = false;
-	enteredPassword = "";
-	comparison = [];
-  }
-
-  /* ---------------- EXISTING APP LOGIC ---------------- */
   let comparison: ComparisonRow[] = [];
   let squads: string[] = [];
+  let membersCache: SpondMember[] = [];
 
-  let loading = false;
+  let loading = true;
   let errorMsg = "";
   let selectedSquad = "";
   let search = "";
@@ -56,12 +32,40 @@
   let justgoFile: File | null = null;
   let financeFiles: File[] = [];
 
+  onMount(() => {
+	if (unlocked) loadDefaultData();
+  });
+
+  /* -------------------- Squad computation -------------------- */
+  function computeSquadsFromMembers(members: SpondMember[]) {
+	const set = new Set<string>();
+
+	const addAll = (val?: string) => {
+	  if (!val) return;
+	  String(val)
+		.split(/[,;/\n\r]+/)
+		.map((s) => s.trim())
+		.filter(Boolean)
+		.forEach((g) => set.add(g));
+	};
+
+	for (const m of members) {
+	  addAll(m.groups);
+	  addAll(m.subGroup);
+	}
+
+	return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }
+
+  /* -------------------- Data loaders -------------------- */
   async function loadDefaultData() {
 	loading = true;
 	errorMsg = "";
 	try {
 	  const spondRaw = await readXlsxFromFetch("/data/Spond/members.xlsx");
 	  const members = mapSpondMembers(spondRaw);
+	  membersCache = members;
+	  squads = computeSquadsFromMembers(membersCache);
 
 	  const justGoRaw = await readXlsxFromFetch("/data/JustGo/basketballscotland.xlsx");
 	  const justgo = mapJustGo(justGoRaw);
@@ -81,19 +85,6 @@
 	  }
 
 	  comparison = buildComparison(members, allFinanceRows, justgo, minPaid);
-
-	  // ✅ build squads list (only top-level group names)
-	  squads = Array.from(
-		new Set(
-		  comparison
-			.flatMap((r) =>
-			  String(r.squad || "")
-				.split(/[,;/\n\r]+/)
-				.map((s) => s.trim())
-			)
-			.filter((name) => name && !/ - /.test(name)) // exclude subgroups like “U18s - 2008”
-		)
-	  ).sort((a, b) => a.localeCompare(b));
 	} catch (e: any) {
 	  errorMsg = e?.message || String(e);
 	} finally {
@@ -109,6 +100,8 @@
 		? await readXlsxFromFile(membersFile)
 		: await readXlsxFromFetch("/data/Spond/members.xlsx");
 	  const members = mapSpondMembers(spondRaw);
+	  membersCache = members;
+	  squads = computeSquadsFromMembers(membersCache);
 
 	  const justGoRaw = justgoFile
 		? await readXlsxFromFile(justgoFile)
@@ -136,17 +129,6 @@
 	  }
 
 	  comparison = buildComparison(members, allFinanceRows, justgo, minPaid);
-	  squads = Array.from(
-		new Set(
-		  comparison
-			.flatMap((r) =>
-			  String(r.squad || "")
-				.split(/[,;/\n\r]+/)
-				.map((s) => s.trim())
-			)
-			.filter((name) => name && !/ - /.test(name))
-		)
-	  ).sort((a, b) => a.localeCompare(b));
 	} catch (e: any) {
 	  errorMsg = e?.message || String(e);
 	} finally {
@@ -154,6 +136,7 @@
 	}
   }
 
+  /* -------------------- Upload handlers -------------------- */
   function onUploadMembers(e: Event) {
 	membersFile = (e.target as HTMLInputElement).files?.[0] || null;
 	rebuildWithUploads();
@@ -169,21 +152,40 @@
 	rebuildWithUploads();
   }
 
-  function filterRows() {
+  /* -------------------- Filters -------------------- */
+function filterRows() {
 	const term = search.trim().toLowerCase();
-
+  
 	return comparison.filter((r) => {
-	  const allGroups = String(r.squad || "")
-		.split(/[,;/\n\r]+/)
-		.map((s) => s.trim());
-
-	  if (selectedSquad && !allGroups.includes(selectedSquad)) return false;
-	  if (term && !r.name.toLowerCase().includes(term)) return false;
+	  const normalize = (s: string) =>
+		String(s || "").trim().toLowerCase();
+  
+	  // Combine all group-related text fields into one big lowercase string
+	  const combinedGroups = [
+		r.squad,
+		(r as any).groups,
+		(r as any).subGroup
+	  ]
+		.map((s) => normalize(s))
+		.filter(Boolean)
+		.join(" | "); // safe separator for matching
+  
+	  // ✅ If a squad is selected, check if it's *contained* in that combined text
+	  if (selectedSquad && !combinedGroups.includes(normalize(selectedSquad))) {
+		return false;
+	  }
+  
+	  // ✅ Name search
+	  if (term && !normalize(r.name).includes(term)) return false;
+  
+	  // ✅ Only issues toggle
 	  if (showOnlyIssues && (r.spondPaid && r.hasMembership)) return false;
+  
 	  return true;
 	});
   }
 
+  /* -------------------- Export -------------------- */
   function exportCSV() {
 	const csv = toCSV(filterRows());
 	const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -194,37 +196,39 @@
 	a.click();
 	URL.revokeObjectURL(url);
   }
+
+  function checkPassword() {
+	if (passwordInput === PASSWORD) {
+	  unlocked = true;
+	  loadDefaultData();
+	} else {
+	  alert("Incorrect password");
+	}
+  }
 </script>
 
-<!-- ====================== PASSWORD GATE ====================== -->
-{#if !isAuthenticated}
-  <div class="flex flex-col items-center justify-center min-h-screen bg-base-200">
+<!-- ====================== UI ====================== -->
+{#if !unlocked}
+  <div class="min-h-screen flex flex-col items-center justify-center bg-base-200">
 	<div class="card w-96 bg-base-100 shadow-xl">
 	  <div class="card-body">
-		<h2 class="card-title text-center mb-4">🔒 Flyers Access</h2>
+		<h2 class="card-title mb-4">Member Checker Login</h2>
 		<input
 		  type="password"
 		  placeholder="Enter password"
-		  class="input input-bordered w-full mb-3"
-		  bind:value={enteredPassword}
-		  on:keydown={(e) => e.key === "Enter" && checkPassword()}
+		  bind:value={passwordInput}
+		  class="input input-bordered w-full mb-4"
+		  on:keydown={(e) => e.key === 'Enter' && checkPassword()}
 		/>
 		<button class="btn btn-primary w-full" on:click={checkPassword}>
-		  Unlock
+		  Access
 		</button>
 	  </div>
 	</div>
   </div>
 {:else}
-  <button class="btn btn-sm btn-outline absolute top-3 right-3" on:click={logout}>
-	Logout
-  </button>
-
-  <!-- ====================== MAIN APP ====================== -->
   <div class="p-6 space-y-6">
 	<!-- Upload Section -->
-	<h1 class="btn btn-ghost normal-case text-3xl text-secondary font-bold text-center block">Flyers Membership Checker</h1>
-	
 	<div class="card bg-base-100 shadow-md">
 	  <div class="card-body">
 		<h2 class="card-title mb-2">Upload Data Files</h2>
@@ -282,7 +286,6 @@
 	{:else if errorMsg}
 	  <div role="alert" class="alert alert-error"><span>{errorMsg}</span></div>
 	{:else}
-	
 	  <div class="overflow-x-auto shadow-md rounded-lg">
 		<table class="table table-zebra w-full text-sm">
 		  <thead>
@@ -302,8 +305,8 @@
 			  <tr
 				class={
 				  (r.spondPaid &&
-				   r.membershipExpiry &&
-				   new Date(r.membershipExpiry) >= new Date())
+					r.membershipExpiry &&
+					new Date(r.membershipExpiry) >= new Date())
 					? "bg-green-50"
 					: (!r.spondPaid ||
 					   !r.membershipExpiry ||
@@ -316,13 +319,7 @@
 				<td>{r.squad}</td>
 				<td>{r.spondPaid ? '✅' : '❌'}</td>
 				<td>£{r.paidAmount}</td>
-				<td>
-				  {#if r.membershipExpiry && new Date(r.membershipExpiry) >= new Date()}
-					✅
-				  {:else}
-					❌
-				  {/if}
-				</td>
+				<td>{r.membershipExpiry && new Date(r.membershipExpiry) >= new Date() ? '✅' : '❌'}</td>
 				<td>{r.membershipStatus || '-'}</td>
 				<td>{r.membershipExpiry || '-'}</td>
 				<td>{r.matchMethod}</td>
