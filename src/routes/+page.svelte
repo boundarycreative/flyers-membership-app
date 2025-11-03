@@ -302,19 +302,21 @@ function filterRows() {
 		  </thead>
 		  <tbody>
 			{#each filterRows() as r}
-			  <tr
-				class={
-				  (r.spondPaid &&
-					r.membershipExpiry &&
-					new Date(r.membershipExpiry) >= new Date())
-					? "bg-green-50"
-					: (!r.spondPaid ||
-					   !r.membershipExpiry ||
-					   new Date(r.membershipExpiry) < new Date())
-					? "bg-red-50"
-					: ""
-				}
-			  >
+			 <tr
+			   class={
+				 r.name.includes(" PU")
+				   ? "bg-blue-50" // 💙 surname contains " PU"
+				   : (r.spondPaid &&
+					   r.membershipExpiry &&
+					   new Date(r.membershipExpiry) >= new Date())
+				   ? "bg-green-50" // ✅ fully cleared
+				   : (!r.spondPaid ||
+					  !r.membershipExpiry ||
+					  new Date(r.membershipExpiry) < new Date())
+				   ? "bg-red-50" // ❌ missing payment or membership
+				   : ""
+			   }
+			 >
 				<td>{r.name}</td>
 				<td>{r.squad}</td>
 				<td>{r.spondPaid ? '✅' : '❌'}</td>
